@@ -1,0 +1,242 @@
+name: Build ORBITA-82 IPA
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Write project files
+        run: |
+          mkdir -p ORBITA82/Assets.xcassets/AppIcon.appiconset
+          mkdir -p ORBITA82/www
+          python3 -c "s=open('www/index.html',encoding='utf-8').read();open('ORBITA82/www/index.html','w',encoding='utf-8').write(s[s.index('<!DOCTYPE'):])"
+          cat > 'project.yml' <<'EOF_PROJECT_YML'
+          name: ORBITA82
+          options:
+            bundleIdPrefix: com.pitcore
+            deploymentTarget:
+              iOS: "12.0"
+          targets:
+            ORBITA82:
+              type: application
+              platform: iOS
+              deploymentTarget: "12.0"
+              sources:
+                - path: ORBITA82
+                  excludes:
+                    - "www/**"
+                    - "Info.plist"
+                - path: ORBITA82/www
+                  type: folder
+                  buildPhase: resources
+              settings:
+                base:
+                  PRODUCT_NAME: ORBITA82
+                  PRODUCT_BUNDLE_IDENTIFIER: com.pitcore.orbita82
+                  INFOPLIST_FILE: ORBITA82/Info.plist
+                  TARGETED_DEVICE_FAMILY: "1,2"
+                  SWIFT_VERSION: "5.0"
+                  ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+                  MARKETING_VERSION: "1.0"
+                  CURRENT_PROJECT_VERSION: "1"
+                  CODE_SIGN_STYLE: Automatic
+                  ENABLE_BITCODE: NO
+          EOF_PROJECT_YML
+          cat > 'ORBITA82/Info.plist' <<'EOF_INFO_PLIST'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+          	<key>CFBundleDevelopmentRegion</key><string>en</string>
+          	<key>CFBundleDisplayName</key><string>ORBITA-82</string>
+          	<key>CFBundleExecutable</key><string>$(EXECUTABLE_NAME)</string>
+          	<key>CFBundleIdentifier</key><string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+          	<key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+          	<key>CFBundleName</key><string>$(PRODUCT_NAME)</string>
+          	<key>CFBundlePackageType</key><string>APPL</string>
+          	<key>CFBundleShortVersionString</key><string>$(MARKETING_VERSION)</string>
+          	<key>CFBundleVersion</key><string>$(CURRENT_PROJECT_VERSION)</string>
+          	<key>LSRequiresIPhoneOS</key><true/>
+          	<key>UILaunchStoryboardName</key><string>LaunchScreen</string>
+          	<key>UIRequiredDeviceCapabilities</key><array><string>arm64</string></array>
+          	<key>UIRequiresFullScreen</key><true/>
+          	<key>UIStatusBarHidden</key><true/>
+          	<key>UIViewControllerBasedStatusBarAppearance</key><true/>
+          	<key>UISupportedInterfaceOrientations</key>
+          	<array><string>UIInterfaceOrientationLandscapeRight</string><string>UIInterfaceOrientationLandscapeLeft</string></array>
+          	<key>UISupportedInterfaceOrientations~ipad</key>
+          	<array><string>UIInterfaceOrientationLandscapeRight</string><string>UIInterfaceOrientationLandscapeLeft</string></array>
+          </dict>
+          </plist>
+          EOF_INFO_PLIST
+          cat > 'ORBITA82/AppDelegate.swift' <<'EOF_APPDELEGATE_SWIFT'
+          import UIKit
+          import AVFoundation
+
+          @main
+          class AppDelegate: UIResponder, UIApplicationDelegate {
+              var window: UIWindow?
+
+              func application(_ application: UIApplication,
+                               didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
+                  activateAudio()
+                  let w = UIWindow(frame: UIScreen.main.bounds)
+                  w.backgroundColor = UIColor(red: 0.04, green: 0.06, blue: 0.08, alpha: 1)
+                  w.rootViewController = ViewController()
+                  w.makeKeyAndVisible()
+                  window = w
+                  return true
+              }
+
+              func applicationDidBecomeActive(_ application: UIApplication) {
+                  activateAudio()
+              }
+
+              /// "playback" = sound plays even when the ring/silent switch is on silent
+              private func activateAudio() {
+                  let s = AVAudioSession.sharedInstance()
+                  try? s.setCategory(.playback, mode: .default, options: [])
+                  try? s.setPreferredIOBufferDuration(0.005)
+                  try? s.setActive(true)
+              }
+          }
+          EOF_APPDELEGATE_SWIFT
+          cat > 'ORBITA82/ViewController.swift' <<'EOF_VIEWCONTROLLER_SWIFT'
+          import UIKit
+          import WebKit
+
+          /// Serves the bundled synth from Bundle/www through the custom scheme orbita://app/
+          /// (a real origin, so localStorage presets and Web Audio work like on a website).
+          final class LocalScheme: NSObject, WKURLSchemeHandler {
+              private let root = Bundle.main.url(forResource: "www", withExtension: nil)!
+
+              func webView(_ webView: WKWebView, start task: WKURLSchemeTask) {
+                  guard let url = task.request.url else { return }
+                  var path = url.path
+                  if path.isEmpty || path == "/" { path = "/index.html" }
+                  let file = root.appendingPathComponent(path)
+                  guard let data = try? Data(contentsOf: file) else {
+                      task.didFailWithError(NSError(domain: NSURLErrorDomain, code: NSURLErrorFileDoesNotExist, userInfo: nil))
+                      return
+                  }
+                  let mime: String
+                  switch file.pathExtension.lowercased() {
+                  case "html": mime = "text/html; charset=utf-8"
+                  case "js": mime = "application/javascript"
+                  case "css": mime = "text/css"
+                  case "png": mime = "image/png"
+                  case "json": mime = "application/json"
+                  default: mime = "application/octet-stream"
+                  }
+                  let resp = HTTPURLResponse(url: url, statusCode: 200, httpVersion: "HTTP/1.1",
+                                             headerFields: ["Content-Type": mime, "Content-Length": "\(data.count)"])!
+                  task.didReceive(resp)
+                  task.didReceive(data)
+                  task.didFinish()
+              }
+
+              func webView(_ webView: WKWebView, stop task: WKURLSchemeTask) {}
+          }
+
+          final class ViewController: UIViewController {
+              private var web: WKWebView!
+              private let scheme = LocalScheme()
+
+              override func loadView() {
+                  let cfg = WKWebViewConfiguration()
+                  cfg.allowsInlineMediaPlayback = true
+                  cfg.mediaTypesRequiringUserActionForPlayback = []
+                  cfg.setURLSchemeHandler(scheme, forURLScheme: "orbita")
+                  let bg = UIColor(red: 0.04, green: 0.06, blue: 0.08, alpha: 1)
+                  web = WKWebView(frame: .zero, configuration: cfg)
+                  web.isOpaque = false
+                  web.backgroundColor = bg
+                  web.scrollView.backgroundColor = bg
+                  web.scrollView.isScrollEnabled = false
+                  web.scrollView.bounces = false
+                  web.scrollView.contentInsetAdjustmentBehavior = .never
+                  web.allowsLinkPreview = false
+                  view = web
+              }
+
+              override func viewDidLoad() {
+                  super.viewDidLoad()
+                  web.load(URLRequest(url: URL(string: "orbita://app/index.html")!))
+              }
+
+              override var prefersStatusBarHidden: Bool { true }
+              override var prefersHomeIndicatorAutoHidden: Bool { true }
+              override var preferredScreenEdgesDeferringSystemGestures: UIRectEdge { .all }
+              override var supportedInterfaceOrientations: UIInterfaceOrientationMask { .landscape }
+          }
+          EOF_VIEWCONTROLLER_SWIFT
+          cat > 'ORBITA82/LaunchScreen.storyboard' <<'EOF_LAUNCHSCREEN_STORYBOARD'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <document type="com.apple.InterfaceBuilder3.CocoaTouch.Storyboard.XIB" version="3.0" toolsVersion="21701" targetRuntime="iOS.CocoaTouch" propertyAccessControl="none" useAutolayout="YES" launchScreen="YES" useTraitCollections="YES" colorMatched="YES" initialViewController="LS1">
+              <device id="retina4_7" orientation="landscape" appearance="dark"/>
+              <dependencies>
+                  <plugIn identifier="com.apple.InterfaceBuilder.IBCocoaTouchPlugin" version="21679"/>
+              </dependencies>
+              <scenes>
+                  <scene sceneID="SC1">
+                      <objects>
+                          <viewController id="LS1" sceneMemberID="viewController">
+                              <view key="view" contentMode="scaleToFill" id="LV1">
+                                  <rect key="frame" x="0.0" y="0.0" width="667" height="375"/>
+                                  <autoresizingMask key="autoresizingMask" widthSizable="YES" heightSizable="YES"/>
+                                  <color key="backgroundColor" red="0.04" green="0.06" blue="0.08" alpha="1" colorSpace="custom" customColorSpace="sRGB"/>
+                              </view>
+                          </viewController>
+                          <placeholder placeholderIdentifier="IBFirstResponder" id="FR1" userLabel="First Responder" sceneMemberID="firstResponder"/>
+                      </objects>
+                      <point key="canvasLocation" x="0" y="0"/>
+                  </scene>
+              </scenes>
+          </document>
+          EOF_LAUNCHSCREEN_STORYBOARD
+          cat > 'ORBITA82/Assets.xcassets/Contents.json' <<'EOF_CONTENTS_JSON'
+          {"info":{"author":"xcode","version":1}}
+          EOF_CONTENTS_JSON
+          cat > 'ORBITA82/Assets.xcassets/AppIcon.appiconset/Contents.json' <<'EOF_CONTENTS_JSON'
+          {"images":[{"filename":"icon-1024.png","idiom":"universal","platform":"ios","size":"1024x1024"}],"info":{"author":"xcode","version":1}}
+          EOF_CONTENTS_JSON
+          cat > icon.py <<'EOF_ICON'
+          from PIL import Image, ImageDraw
+          S=1024;k=S/180
+          im=Image.new('RGB',(S,S),(10,15,21));d=ImageDraw.Draw(im)
+          def box(a,b,c,e):return (a*k,b*k,c*k,e*k)
+          d.arc(box(30,30,150,150),135,405,fill=(29,39,51),width=int(10*k))
+          d.arc(box(30,30,150,150),135,320,fill=(61,255,160),width=int(10*k))
+          d.ellipse(box(52,52,128,128),fill=(11,17,24),outline=(42,54,68),width=int(3*k))
+          d.line(box(90,90,112,68),fill=(244,247,250),width=int(7*k))
+          for i in range(6):
+              x=22+i*23; d.rounded_rectangle(box(x,140,x+20,172),int(3*k),fill=(233,238,243))
+          for i in [0,1,3,4]:
+              x=37+i*23; d.rectangle(box(x,140,x+12,158),fill=(255,79,216))
+          im.save('ORBITA82/Assets.xcassets/AppIcon.appiconset/icon-1024.png')
+          EOF_ICON
+      - name: Make icon
+        run: |
+          python3 -m pip install --quiet --break-system-packages pillow || python3 -m pip install --quiet pillow
+          python3 icon.py
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      - name: Generate Xcode project
+        run: xcodegen generate
+      - name: Build (unsigned)
+        run: |
+          xcodebuild -project ORBITA82.xcodeproj -target ORBITA82 -configuration Release \
+            -sdk iphoneos SYMROOT="$PWD/build" \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" build
+      - name: Package IPA
+        run: |
+          mkdir -p Payload
+          cp -R build/Release-iphoneos/ORBITA82.app Payload/
+          zip -qry ORBITA82.ipa Payload
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ORBITA82-ipa
+          path: ORBITA82.ipa
